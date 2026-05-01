@@ -473,6 +473,10 @@ class ImageViewer(QWidget):
                     fm = painter.fontMetrics()
                     padding = 6
                     from PySide6.QtCore import QRectF
+                    
+                    # Track drawn label rects to avoid overlaps
+                    drawn_rects: list[QRectF] = []
+                    
                     for line in self._measurements:
                         if line.measurement_id is None:
                             continue
@@ -495,14 +499,41 @@ class ImageViewer(QWidget):
                         mid_y = (p1.y() + p2.y()) / 2.0
                         text_w = fm.horizontalAdvance(text)
                         text_h = fm.height()
-                        rect_x = mid_x + 6
-                        rect_y = mid_y - text_h - 6
-                        # if too close to top, place below the line
-                        if rect_y < 4:
-                            rect_y = mid_y + 6
-                        rect_x = max(4, min(rect_x, w - text_w - padding))
-                        rect_y = max(4, min(rect_y, h - text_h - padding))
+                        
+                        # Try multiple positions: right, below, above, left
+                        candidate_positions = [
+                            (mid_x + 6, mid_y - text_h - 6),      # right-above
+                            (mid_x + 6, mid_y + 6),               # right-below
+                            (mid_x - text_w - 6, mid_y + 6),      # left-below
+                            (mid_x - text_w - 6, mid_y - text_h - 6),  # left-above
+                        ]
+                        
+                        rect_x, rect_y = None, None
+                        for cand_x, cand_y in candidate_positions:
+                            # Clamp to bounds
+                            test_x = max(4, min(cand_x, w - text_w - padding))
+                            test_y = max(4, min(cand_y, h - text_h - padding))
+                            test_rect = QRectF(test_x - 4, test_y - 2, text_w + padding, text_h + 4)
+                            
+                            # Check for collision with already-drawn labels
+                            collision = False
+                            for drawn_rect in drawn_rects:
+                                if test_rect.intersects(drawn_rect):
+                                    collision = True
+                                    break
+                            
+                            if not collision:
+                                rect_x, rect_y = test_x, test_y
+                                break
+                        
+                        # If all positions collide, use the first one anyway (but slightly offset)
+                        if rect_x is None:
+                            rect_x = max(4, min(mid_x + 6, w - text_w - padding))
+                            rect_y = max(4, min(mid_y - text_h - 6, h - text_h - padding))
+                        
                         bg_rect = QRectF(rect_x - 4, rect_y - 2, text_w + padding, text_h + 4)
+                        drawn_rects.append(bg_rect)
+                        
                         painter.setRenderHint(QPainter.TextAntialiasing)
                         painter.setPen(Qt.NoPen)
                         painter.setBrush(QColor(0, 0, 0, 160))

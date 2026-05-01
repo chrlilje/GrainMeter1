@@ -1,12 +1,15 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolBar,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QToolBar,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QInputDialog,
     QSlider, QCheckBox, QSizePolicy, QAbstractItemView, QToolButton, QLabel, QPushButton
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt, QSignalBlocker
+from PySide6.QtCore import Qt, QSignalBlocker, QTimer
 from functools import partial
 import math
+import os
+import cv2
+import numpy as np
 
 try:
     from .image_viewer import ImageViewer, MeasurementLine
@@ -32,6 +35,17 @@ class AppWindow(QMainWindow):
         self._selected_measurement_id: int | None = None
         self.overlay_scale: float = 1.0
 
+        # Debounce timers for smooth slider response
+        self._sample_enhancement_timer = QTimer()
+        self._sample_enhancement_timer.setSingleShot(True)
+        self._sample_enhancement_timer.timeout.connect(self._apply_sample_enhancement)
+        self._sample_enhancement_pending: tuple[float, float, float] | None = None
+
+        self._ref_enhancement_timer = QTimer()
+        self._ref_enhancement_timer.setSingleShot(True)
+        self._ref_enhancement_timer.timeout.connect(self._apply_ref_enhancement)
+        self._ref_enhancement_pending: tuple[float, float, float] | None = None
+
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -50,10 +64,10 @@ class AppWindow(QMainWindow):
         # Top: viewers with separate control columns
         viewers_and_controls_layout = QHBoxLayout()
 
-        # Left column: reference viewer with reference-specific buttons
-        left_column = QVBoxLayout()
+        # Left column: reference viewer with reference-specific buttons (using grid for better row control)
+        left_column = QGridLayout()
         
-        # Reference image buttons (above viewer)
+        # Row 0: Reference image buttons (above viewer)
         ref_buttons_layout = QHBoxLayout()
         load_ref_action = QAction("Load reference", self)
         load_ref_action.triggered.connect(self.load_reference_image)
@@ -86,13 +100,23 @@ class AppWindow(QMainWindow):
         move_overlay_btn.toggled.connect(self._on_move_overlay_toggled)
         self.move_overlay_button = move_overlay_btn
         ref_buttons_layout.addWidget(move_overlay_btn)
-        ref_buttons_layout.addStretch()
         
-        left_column.addLayout(ref_buttons_layout)
+        # Reference filename label (right-aligned)
+        self.ref_filename_label = QLabel("(no file)")
+        self.ref_filename_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.ref_filename_label.setMaximumWidth(200)
+        self.ref_filename_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        ref_buttons_layout.addStretch()
+        ref_buttons_layout.addWidget(self.ref_filename_label)
+        
+        left_column.addLayout(ref_buttons_layout, 0, 0)
 
+        # Row 1: Image viewer (stretched)
         self.ref_viewer = ImageViewer()
-        left_column.addWidget(self.ref_viewer)
-        # Reference enhancement controls (under reference viewer)
+        left_column.addWidget(self.ref_viewer, 1, 0)
+        left_column.setRowStretch(1, 1)  # Row 1 gets all available vertical space
+
+        # Row 2: Reference enhancement controls (under reference viewer)
         ref_enh_layout = QHBoxLayout()
         ref_enh_layout.addWidget(QLabel("Ref Brightness:"))
         self.ref_brightness_slider = QSlider(Qt.Horizontal)
@@ -128,13 +152,13 @@ class AppWindow(QMainWindow):
         ref_reset_btn.setMaximumWidth(50)
         ref_reset_btn.clicked.connect(self._on_reset_ref_enhancements)
         ref_enh_layout.addWidget(ref_reset_btn)
-        left_column.addLayout(ref_enh_layout)
-        viewers_and_controls_layout.addLayout(left_column, 3)
+        left_column.addLayout(ref_enh_layout, 2, 0)
+        viewers_and_controls_layout.addLayout(left_column)
 
-        # Right column: sample viewer + sample-specific buttons + enhancement controls
-        right_column = QVBoxLayout()
+        # Right column: sample viewer + sample-specific buttons + enhancement controls (using grid for better row control)
+        right_column = QGridLayout()
         
-        # Sample image buttons (above viewer)
+        # Row 0: Sample image buttons (above viewer)
         sample_buttons_layout = QHBoxLayout()
         load_sample_btn = QPushButton("📁 Load sample")
         load_sample_btn.clicked.connect(self.load_sample_image)
@@ -151,12 +175,21 @@ class AppWindow(QMainWindow):
         sample_buttons_layout.addWidget(measure_btn)
         sample_buttons_layout.addStretch()
         
-        right_column.addLayout(sample_buttons_layout)
+        # Sample filename label (right-aligned)
+        self.sample_filename_label = QLabel("(no file)")
+        self.sample_filename_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.sample_filename_label.setMaximumWidth(200)
+        self.sample_filename_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sample_buttons_layout.addWidget(self.sample_filename_label)
         
+        right_column.addLayout(sample_buttons_layout, 0, 0)
+        
+        # Row 1: Image viewer (stretched)
         self.sample_viewer = ImageViewer()
-        right_column.addWidget(self.sample_viewer, 1)
+        right_column.addWidget(self.sample_viewer, 1, 0)
+        right_column.setRowStretch(1, 1)  # Row 1 gets all available vertical space
 
-        # enhancement controls (brightness, contrast, saturation) - on the right under sample
+        # Row 2: enhancement controls (brightness, contrast, saturation) - on the right under sample
         enhancement_layout = QHBoxLayout()
         
         # Brightness
@@ -201,34 +234,9 @@ class AppWindow(QMainWindow):
         reset_btn.clicked.connect(self._on_reset_enhancements)
         enhancement_layout.addWidget(reset_btn)
 
-        right_column.addLayout(enhancement_layout)
-        viewers_and_controls_layout.addLayout(right_column, 3)
+        right_column.addLayout(enhancement_layout, 2, 0)
 
-        main_layout.addLayout(viewers_and_controls_layout, 8)
-
-        # overlay controls (place under reference viewer on the left)
-        overlay_layout = QHBoxLayout()
-        self.overlay_checkbox = QCheckBox("Overlay sample on reference")
-        self.overlay_checkbox.stateChanged.connect(self._on_overlay_toggled)
-        overlay_layout.addWidget(self.overlay_checkbox)
-
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(50)
-        self.opacity_slider.setEnabled(False)
-        self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        # keep opacity slider short and only in left column
-        self.opacity_slider.setMaximumWidth(150)
-        overlay_layout.addWidget(self.opacity_slider)
-        left_column.addLayout(overlay_layout)
-
-        # connect overlay scale changes (update table/display when user scales)
-        try:
-            self.ref_viewer.connect_overlay_scale_changed(self._on_overlay_scale_changed)
-        except Exception:
-            pass
-
-        # Statistics panel above measurements table (place under sample viewer on right)
+        # Row 3: statistics and measurement labels (under enhancement)
         stats_layout = QHBoxLayout()
         self.stats_label = QLabel("Measurements: 0 | Avg: — | Std Dev: —")
         stats_layout.addWidget(self.stats_label)
@@ -238,10 +246,20 @@ class AppWindow(QMainWindow):
         self.show_labels_checkbox.setChecked(False)
         self.show_labels_checkbox.stateChanged.connect(lambda s: self._on_show_measurement_labels(bool(s)))
         stats_layout.addWidget(self.show_labels_checkbox)
+        # Toggle to include sample number in labels
+        self.show_sample_numbers_checkbox = QCheckBox("Include sample number")
+        self.show_sample_numbers_checkbox.setChecked(False)
+        self.show_sample_numbers_checkbox.stateChanged.connect(lambda s: self._update_measurement_labels())
+        stats_layout.addWidget(self.show_sample_numbers_checkbox)
+        # Export sample image button
+        export_sample_btn = QPushButton("💾 Export sample")
+        export_sample_btn.setMaximumWidth(120)
+        export_sample_btn.clicked.connect(self.export_sample_image)
+        stats_layout.addWidget(export_sample_btn)
         stats_layout.addStretch()
-        right_column.addLayout(stats_layout)
+        right_column.addLayout(stats_layout, 3, 0)
 
-        # Measurement table (more compact: remove Type and Accepted columns) under sample viewer
+        # Row 4: Measurement table (more compact: remove Type and Accepted columns) under stats
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["ID", "Pixels", "Length µm (10⁻⁶m)", "Delete"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -255,13 +273,43 @@ class AppWindow(QMainWindow):
             self.table.verticalHeader().setDefaultSectionSize(22)
         except Exception:
             pass
-        right_column.addWidget(self.table, 1)
+        right_column.addWidget(self.table, 4, 0)
+        
+        viewers_and_controls_layout.addLayout(right_column)
+
+        main_layout.addLayout(viewers_and_controls_layout, 8)
+
+        # Row 3: overlay controls (place under reference viewer on the left)
+        overlay_layout = QHBoxLayout()
+        self.overlay_checkbox = QCheckBox("Overlay sample on reference")
+        self.overlay_checkbox.stateChanged.connect(self._on_overlay_toggled)
+        overlay_layout.addWidget(self.overlay_checkbox)
+
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        self.opacity_slider.setValue(50)
+        self.opacity_slider.setEnabled(False)
+        self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        # keep opacity slider short and only in left column
+        self.opacity_slider.setMaximumWidth(150)
+        overlay_layout.addWidget(self.opacity_slider)
+        left_column.addLayout(overlay_layout, 3, 0)
+
+        # connect overlay scale changes (update table/display when user scales)
+        try:
+            self.ref_viewer.connect_overlay_scale_changed(self._on_overlay_scale_changed)
+        except Exception:
+            pass
 
     def load_reference_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open reference image")
         if not path:
             return
         self.ref_viewer.load_image(path)
+        # Update reference filename label
+        filename = os.path.basename(path)
+        self.ref_filename_label.setText(filename)
+        self.ref_filename_label.setToolTip(path)  # Full path on hover
         # if overlay mode active and sample loaded, set overlay
         if self.overlay_checkbox.isChecked() and self.sample_viewer._image_path:
             self.ref_viewer.set_overlay_image(self.sample_viewer._image_path)
@@ -272,6 +320,10 @@ class AppWindow(QMainWindow):
         if not path:
             return
         self.sample_viewer.load_image(path)
+        # Update sample filename label
+        filename = os.path.basename(path)
+        self.sample_filename_label.setText(filename)
+        self.sample_filename_label.setToolTip(path)  # Full path on hover
         self._refresh_measurement_overlay()
         # if overlay mode active, set as overlay on reference
         if self.overlay_checkbox.isChecked() and self.ref_viewer._image_path:
@@ -452,6 +504,89 @@ class AppWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export CSV:\n{e}")
 
+    def export_sample_image(self) -> None:
+        """Export sample image with annotations (measurement lines and labels) if enabled."""
+        if not self.sample_viewer._image_path:
+            QMessageBox.warning(self, "Warning", "No sample image loaded")
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(self, "Export sample image", filter="PNG Files (*.png);;JPEG Files (*.jpg);;BMP Files (*.bmp)")
+        if not path:
+            return
+        
+        try:
+            # Get the original image
+            image_bgr = self.sample_viewer._image_cache_bgr
+            if image_bgr is None:
+                QMessageBox.warning(self, "Warning", "Unable to load image data")
+                return
+            
+            # Create a copy to draw on
+            export_image = image_bgr.copy()
+            
+            # Draw measurement lines if any exist
+            for line in self.sample_viewer._measurements:
+                pt1 = (int(line.x1), int(line.y1))
+                pt2 = (int(line.x2), int(line.y2))
+                # Draw line in red (BGR format)
+                cv2.line(export_image, pt1, pt2, (80, 80, 255), 2)
+            
+            # Draw measurement labels if enabled
+            if self.sample_viewer._show_measurement_labels and self.sample_viewer._measurement_label_texts:
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                font_color = (255, 255, 255)  # White in BGR
+                bg_color = (0, 0, 0)  # Black background
+                thickness = 1
+                
+                for line in self.sample_viewer._measurements:
+                    if line.measurement_id is None:
+                        continue
+                    text = self.sample_viewer._measurement_label_texts.get(line.measurement_id)
+                    if not text:
+                        continue
+                    
+                    # Calculate midpoint
+                    mid_x = int((line.x1 + line.x2) / 2)
+                    mid_y = int((line.y1 + line.y2) / 2)
+                    
+                    # Get text size
+                    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+                    
+                    # Draw background rectangle
+                    padding = 4
+                    cv2.rectangle(export_image, 
+                                (mid_x - text_w // 2 - padding, mid_y - text_h - baseline - padding),
+                                (mid_x + text_w // 2 + padding, mid_y + baseline + padding),
+                                bg_color, -1)
+                    
+                    # Draw text
+                    cv2.putText(export_image, text, (mid_x - text_w // 2, mid_y), 
+                              font, font_scale, font_color, thickness)
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            
+            # Try cv2.imwrite first, fallback to manual encoding if it fails
+            success = cv2.imwrite(path, export_image)
+            if not success:
+                # Fallback: use imencode + manual write with proper encoding
+                ext = os.path.splitext(path)[1].lower()
+                if not ext:
+                    ext = '.png'
+                ret, buffer = cv2.imencode(ext, export_image)
+                if ret:
+                    with open(path, 'wb') as f:
+                        f.write(buffer)
+                    success = True
+            
+            if success:
+                QMessageBox.information(self, "Export", f"Exported sample image to:\n{path}")
+            else:
+                QMessageBox.warning(self, "Warning", f"Failed to write image to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export sample image:\n{e}")
+
     def refresh_table(self) -> None:
         current_selection = self._selected_measurement_id
         blocker = QSignalBlocker(self.table)
@@ -606,7 +741,10 @@ class AppWindow(QMainWindow):
         for m in self.measurements.get_all():
             display_pixels = m.pixel_length * float(self.overlay_scale)
             display_um = display_pixels * self.calibration.um_per_pixel
-            mapping[m.id] = f"{display_um:.2f} µm"
+            if self.show_sample_numbers_checkbox.isChecked():
+                mapping[m.id] = f"{m.id}: {display_um:.2f} µm"
+            else:
+                mapping[m.id] = f"{display_um:.2f} µm"
         self.sample_viewer.set_measurement_label_texts(mapping)
 
     def _restore_default_interaction_modes(self) -> None:
@@ -619,32 +757,46 @@ class AppWindow(QMainWindow):
         self.sample_viewer.clear_measurement_preview()
 
     def _on_enhancement_changed(self) -> None:
-        """Handle changes to enhancement sliders."""
+        """Handle changes to sample enhancement sliders with debouncing."""
         brightness = float(self.brightness_slider.value())
         contrast = float(self.contrast_slider.value()) / 100.0
         saturation = float(self.saturation_slider.value()) / 100.0
         
-        # Update value labels
+        # Update value labels immediately for feedback
         self.brightness_value_label.setText(f"{int(brightness)}")
         self.contrast_value_label.setText(f"{contrast:.2f}")
         self.saturation_value_label.setText(f"{saturation:.2f}")
         
-        # Apply enhancements to sample viewer only
-        self.sample_viewer.set_enhancement(brightness, contrast, saturation)
+        # Queue enhancement and restart debounce timer
+        self._sample_enhancement_pending = (brightness, contrast, saturation)
+        self._sample_enhancement_timer.start(100)  # 100ms debounce
+
+    def _apply_sample_enhancement(self) -> None:
+        """Apply pending sample viewer enhancement."""
+        if self._sample_enhancement_pending:
+            brightness, contrast, saturation = self._sample_enhancement_pending
+            self.sample_viewer.set_enhancement(brightness, contrast, saturation)
 
     def _on_ref_enhancement_changed(self) -> None:
-        """Handle changes to reference enhancement sliders."""
+        """Handle changes to reference enhancement sliders with debouncing."""
         brightness = float(self.ref_brightness_slider.value())
         contrast = float(self.ref_contrast_slider.value()) / 100.0
         saturation = float(self.ref_saturation_slider.value()) / 100.0
         
-        # Update value labels
+        # Update value labels immediately for feedback
         self.ref_brightness_value_label.setText(f"{int(brightness)}")
         self.ref_contrast_value_label.setText(f"{contrast:.2f}")
         self.ref_saturation_value_label.setText(f"{saturation:.2f}")
         
-        # Apply enhancements to reference viewer only
-        self.ref_viewer.set_enhancement(brightness, contrast, saturation)
+        # Queue enhancement and restart debounce timer
+        self._ref_enhancement_pending = (brightness, contrast, saturation)
+        self._ref_enhancement_timer.start(100)  # 100ms debounce
+
+    def _apply_ref_enhancement(self) -> None:
+        """Apply pending reference viewer enhancement."""
+        if self._ref_enhancement_pending:
+            brightness, contrast, saturation = self._ref_enhancement_pending
+            self.ref_viewer.set_enhancement(brightness, contrast, saturation)
 
     def _on_reset_enhancements(self) -> None:
         """Reset all enhancements to defaults."""
