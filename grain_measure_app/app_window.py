@@ -35,40 +35,10 @@ class AppWindow(QMainWindow):
         self._init_ui()
 
     def _init_ui(self) -> None:
+        # Top toolbar: only Export CSV
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)
-
-        load_ref_action = QAction("Load reference", self)
-        load_ref_action.triggered.connect(self.load_reference_image)
-        toolbar.addAction(load_ref_action)
-
-        load_sample_action = QAction("Load sample", self)
-        load_sample_action.triggered.connect(self.load_sample_image)
-        toolbar.addAction(load_sample_action)
-
-        calibrate_action = QAction("Calibrate", self)
-        calibrate_action.triggered.connect(self.start_calibration)
-        toolbar.addAction(calibrate_action)
-
-        scale_sample_action = QAction("Scale sample", self)
-        scale_sample_action.setCheckable(True)
-        scale_sample_action.toggled.connect(self._on_scale_sample_toggled)
-        self.scale_sample_action = scale_sample_action
-        toolbar.addAction(scale_sample_action)
-
-        measure_action = QAction("Measure", self)
-        measure_action.setCheckable(True)
-        measure_action.toggled.connect(self._on_measure_toggled)
-        self.measure_action = measure_action
-        toolbar.addAction(measure_action)
-
-        move_overlay_action = QAction("Move overlay", self)
-        move_overlay_action.setCheckable(True)
-        move_overlay_action.toggled.connect(self._on_move_overlay_toggled)
-        self.move_overlay_action = move_overlay_action
-        toolbar.addAction(move_overlay_action)
-
-        export_action = QAction("Export CSV", self)
+        export_action = QAction("💾 Export CSV", self)
         export_action.triggered.connect(self.export_csv)
         toolbar.addAction(export_action)
 
@@ -80,8 +50,46 @@ class AppWindow(QMainWindow):
         # Top: viewers with separate control columns
         viewers_and_controls_layout = QHBoxLayout()
 
-        # Left column: reference viewer
+        # Left column: reference viewer with reference-specific buttons
         left_column = QVBoxLayout()
+        
+        # Reference image buttons (above viewer)
+        ref_buttons_layout = QHBoxLayout()
+        load_ref_action = QAction("Load reference", self)
+        load_ref_action.triggered.connect(self.load_reference_image)
+        load_ref_btn = QPushButton("📁 Load reference")
+        load_ref_btn.clicked.connect(self.load_reference_image)
+        ref_buttons_layout.addWidget(load_ref_btn)
+
+        calibrate_action = QAction("Calibrate", self)
+        calibrate_action.triggered.connect(self.start_calibration)
+        calibrate_btn = QPushButton("📏 Calibrate")
+        calibrate_btn.clicked.connect(self.start_calibration)
+        ref_buttons_layout.addWidget(calibrate_btn)
+
+        scale_sample_action = QAction("Scale sample", self)
+        scale_sample_action.setCheckable(True)
+        scale_sample_action.triggered.connect(self._on_scale_sample_toggled)
+        self.scale_sample_action = scale_sample_action
+        scale_btn = QPushButton("↕️ Scale sample")
+        scale_btn.setCheckable(True)
+        scale_btn.toggled.connect(self._on_scale_sample_toggled)
+        self.scale_sample_button = scale_btn
+        ref_buttons_layout.addWidget(scale_btn)
+
+        move_overlay_action = QAction("Move overlay", self)
+        move_overlay_action.setCheckable(True)
+        move_overlay_action.triggered.connect(self._on_move_overlay_toggled)
+        self.move_overlay_action = move_overlay_action
+        move_overlay_btn = QPushButton("🔄 Move overlay")
+        move_overlay_btn.setCheckable(True)
+        move_overlay_btn.toggled.connect(self._on_move_overlay_toggled)
+        self.move_overlay_button = move_overlay_btn
+        ref_buttons_layout.addWidget(move_overlay_btn)
+        ref_buttons_layout.addStretch()
+        
+        left_column.addLayout(ref_buttons_layout)
+
         self.ref_viewer = ImageViewer()
         left_column.addWidget(self.ref_viewer)
         # Reference enhancement controls (under reference viewer)
@@ -123,8 +131,28 @@ class AppWindow(QMainWindow):
         left_column.addLayout(ref_enh_layout)
         viewers_and_controls_layout.addLayout(left_column, 3)
 
-        # Right column: sample viewer + enhancement controls
+        # Right column: sample viewer + sample-specific buttons + enhancement controls
         right_column = QVBoxLayout()
+        
+        # Sample image buttons (above viewer)
+        sample_buttons_layout = QHBoxLayout()
+        load_sample_btn = QPushButton("📁 Load sample")
+        load_sample_btn.clicked.connect(self.load_sample_image)
+        sample_buttons_layout.addWidget(load_sample_btn)
+
+        measure_action = QAction("Measure", self)
+        measure_action.setCheckable(True)
+        measure_action.triggered.connect(self._on_measure_toggled)
+        self.measure_action = measure_action
+        measure_btn = QPushButton("📐 Measure")
+        measure_btn.setCheckable(True)
+        measure_btn.toggled.connect(self._on_measure_toggled)
+        self.measure_button = measure_btn
+        sample_buttons_layout.addWidget(measure_btn)
+        sample_buttons_layout.addStretch()
+        
+        right_column.addLayout(sample_buttons_layout)
+        
         self.sample_viewer = ImageViewer()
         right_column.addWidget(self.sample_viewer, 1)
 
