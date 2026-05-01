@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.user
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# Test cache
+.pytest_cache/
+
+# Environment variables
+.env
+.env.*
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# Project-specific: avoid committing user instructions, sample images and generated docs
+instructions.txt
+Copilot Instructions.docx
+sampleimages/
+
+# Local run launcher
+# run_app.bat is intentionally kept, remove it if you prefer
+
+# Notebook checkpoints
+.ipynb_checkpoints/
