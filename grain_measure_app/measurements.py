@@ -13,6 +13,9 @@ class Measurement:
     pixel_length: float
     length_mm: float
     length_um: float
+    intersect_points: tuple[tuple[float, float], ...] = ()
+    grain_size_mm: float | None = None
+    grain_size_um: float | None = None
     comment: str = ""
     accepted: bool = True
 

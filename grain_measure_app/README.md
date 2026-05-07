@@ -19,4 +19,5 @@ python -m grain_measure_app.main
 
 Notes
 - Place your sample images in the `sampleimages` folder and use the toolbar to load them.
-- This scaffold implements the UI and basic models; calibration and measurement flows are stubs ready to be implemented next.
+- This scaffold now includes calibration, manual line measurement, and intersects-based grain sizing in the sample viewer.
+- In intersects mode, draw a line first, then click each grain intersection along that line.

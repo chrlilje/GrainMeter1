@@ -17,6 +17,8 @@ class MeasurementLine:
     x2: float
     y2: float
     measurement_id: int | None = None
+    measurement_type: str = "line"
+    intersect_points: tuple[tuple[float, float], ...] = ()
 
 
 class ImageViewer(QWidget):
@@ -57,6 +59,8 @@ class ImageViewer(QWidget):
         self._selected_measurement_id: int | None = None
         self._temp_line: tuple[float, float, float, float] | None = None
         self._measurement_start: QPointF | None = None
+        self._intersects_preview: tuple[float, float, float, float] | None = None
+        self._intersects_preview_points: list[tuple[float, float]] = []
         self._calibration_points: list[QPointF] = []
         self._calibration_preview: tuple[float, float, float, float] | None = None
         self._calibration_label_mm: float | None = None
@@ -216,6 +220,25 @@ class ImageViewer(QWidget):
     def clear_measurement_preview(self) -> None:
         self._temp_line = None
         self._measurement_start = None
+        self.update()
+
+    def set_intersects_preview(
+        self,
+        start: tuple[float, float] | None,
+        end: tuple[float, float] | None,
+        points: list[tuple[float, float]] | None = None,
+    ) -> None:
+        if start is None or end is None:
+            self._intersects_preview = None
+            self._intersects_preview_points = []
+        else:
+            self._intersects_preview = (start[0], start[1], end[0], end[1])
+            self._intersects_preview_points = list(points or [])
+        self.update()
+
+    def clear_intersects_preview(self) -> None:
+        self._intersects_preview = None
+        self._intersects_preview_points = []
         self.update()
 
     def set_measurement_preview(self, start: tuple[float, float] | None, end: tuple[float, float] | None) -> None:
@@ -421,6 +444,25 @@ class ImageViewer(QWidget):
                 p1 = self.image_to_widget(QPointF(line.x1, line.y1))
                 p2 = self.image_to_widget(QPointF(line.x2, line.y2))
                 painter.drawLine(p1, p2)
+                if line.measurement_type == "intersects" and line.intersect_points:
+                    painter.setPen(QPen(QColor(80, 220, 120), 1))
+                    painter.setBrush(QColor(80, 220, 120))
+                    for idx, (px, py) in enumerate(line.intersect_points, start=1):
+                        widget_point = self.image_to_widget(QPointF(px, py))
+                        painter.drawEllipse(widget_point, 4, 4)
+                        painter.drawText(int(widget_point.x()) + 6, int(widget_point.y()) - 6, str(idx))
+
+            if self._intersects_preview:
+                painter.setPen(QPen(QColor(80, 220, 120), 2, Qt.DashLine))
+                p1 = self.image_to_widget(QPointF(self._intersects_preview[0], self._intersects_preview[1]))
+                p2 = self.image_to_widget(QPointF(self._intersects_preview[2], self._intersects_preview[3]))
+                painter.drawLine(p1, p2)
+                painter.setPen(QPen(QColor(80, 220, 120), 1))
+                painter.setBrush(QColor(80, 220, 120))
+                for idx, (px, py) in enumerate(self._intersects_preview_points, start=1):
+                    widget_point = self.image_to_widget(QPointF(px, py))
+                    painter.drawEllipse(widget_point, 4, 4)
+                    painter.drawText(int(widget_point.x()) + 6, int(widget_point.y()) - 6, str(idx))
 
             if self._calibration_points:
                 painter.setPen(QPen(QColor(255, 215, 0), 2))

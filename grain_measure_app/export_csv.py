@@ -13,7 +13,7 @@ def export_measurements_csv(path: str, measurements: Iterable[ModelMeasurement],
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         # header with calibration
-        writer.writerow(["image_name", "reference_image_name", "known_distance_mm", "pixels_per_mm", "um_per_pixel", "measurement_id", "measurement_type", "x1", "y1", "x2", "y2", "pixel_length", "length_mm", "length_um", "comment", "accepted"])
+        writer.writerow(["image_name", "reference_image_name", "known_distance_mm", "pixels_per_mm", "um_per_pixel", "measurement_id", "measurement_type", "x1", "y1", "x2", "y2", "pixel_length", "length_mm", "length_um", "intersection_count", "grain_size_mm", "grain_size_um", "intersection_points", "comment", "accepted"])
         for m in measurements:
             # compute scaled values according to overlay_scale and calibration if available
             pixel_length = m.pixel_length * float(overlay_scale)
@@ -25,6 +25,16 @@ def export_measurements_csv(path: str, measurements: Iterable[ModelMeasurement],
                 scale = (pixel_length / m.pixel_length) if m.pixel_length else 1.0
                 length_mm = m.length_mm * scale
                 length_um = m.length_um * scale
+
+            intersection_points = tuple(getattr(m, "intersect_points", ()) or ())
+            intersection_count = len(intersection_points)
+            grain_size_mm = getattr(m, "grain_size_mm", None)
+            grain_size_um = getattr(m, "grain_size_um", None)
+            if m.measurement_type == "intersects" and intersection_count > 0:
+                if grain_size_mm is None:
+                    grain_size_mm = length_mm / intersection_count
+                if grain_size_um is None:
+                    grain_size_um = length_um / intersection_count
 
             writer.writerow([
                 "",  # image_name placeholder
@@ -41,6 +51,10 @@ def export_measurements_csv(path: str, measurements: Iterable[ModelMeasurement],
                 round(pixel_length, 2),
                 round(length_mm, 2),
                 round(length_um, 2),
+                intersection_count,
+                round(grain_size_mm, 2) if grain_size_mm is not None else "",
+                round(grain_size_um, 2) if grain_size_um is not None else "",
+                ";".join(f"{x:.2f}:{y:.2f}" for x, y in intersection_points),
                 m.comment,
                 m.accepted,
             ])

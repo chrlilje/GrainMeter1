@@ -32,6 +32,9 @@ class AppWindow(QMainWindow):
         self.calibration: CalibrationData | None = None
         self.measurements = MeasurementsManager()
         self._measurement_points: list[tuple[float, float]] = []
+        self._intersects_line_points: list[tuple[float, float]] = []
+        self._intersects_points: list[tuple[float, float]] = []
+        self._intersects_line_complete = False
         self._selected_measurement_id: int | None = None
         self.overlay_scale: float = 1.0
 
@@ -173,6 +176,23 @@ class AppWindow(QMainWindow):
         measure_btn.toggled.connect(self._on_measure_toggled)
         self.measure_button = measure_btn
         sample_buttons_layout.addWidget(measure_btn)
+
+        intersects_action = QAction("Intersects", self)
+        intersects_action.setCheckable(True)
+        intersects_action.triggered.connect(self._on_intersects_toggled)
+        self.intersects_action = intersects_action
+        intersects_btn = QPushButton("📍 Intersects")
+        intersects_btn.setCheckable(True)
+        intersects_btn.toggled.connect(self._on_intersects_toggled)
+        self.intersects_button = intersects_btn
+        sample_buttons_layout.addWidget(intersects_btn)
+        # A contextual "Done" checkmark shown only during an active intersects session
+        done_btn = QPushButton("✔ Done")
+        done_btn.setVisible(False)
+        done_btn.setMaximumWidth(80)
+        done_btn.clicked.connect(self._on_intersects_done_clicked)
+        self.intersects_done_button = done_btn
+        sample_buttons_layout.addWidget(done_btn)
         sample_buttons_layout.addStretch()
         
         # Sample filename label (right-aligned)
@@ -238,7 +258,7 @@ class AppWindow(QMainWindow):
 
         # Row 3: statistics and measurement labels (under enhancement)
         stats_layout = QHBoxLayout()
-        self.stats_label = QLabel("Measurements: 0 | Avg: — | Std Dev: —")
+        self.stats_label = QLabel("Measurements: 0 | Line avg: — | Intersects avg: —")
         stats_layout.addWidget(self.stats_label)
         stats_layout.addStretch()
         # Toggle to show measurement labels on sample image
@@ -259,9 +279,9 @@ class AppWindow(QMainWindow):
         stats_layout.addStretch()
         right_column.addLayout(stats_layout, 3, 0)
 
-        # Row 4: Measurement table (more compact: remove Type and Accepted columns) under stats
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["ID", "Pixels", "Length µm (10⁻⁶m)", "Delete"])
+        # Row 4: Measurement table with separate line/intersects result columns
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["ID", "Type", "Line length µm", "Intersects", "Avg size µm", "Delete"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -429,6 +449,9 @@ class AppWindow(QMainWindow):
 
     def _on_measure_toggled(self, checked: bool) -> None:
         if checked:
+            if self.intersects_button.isChecked():
+                self._cancel_intersects_session()
+                self._set_button_checked(self.intersects_button, False)
             if not self.sample_viewer._pixmap:
                 QMessageBox.warning(self, "Measure", "Load a sample image first.")
                 self.measure_action.setChecked(False)
@@ -441,6 +464,7 @@ class AppWindow(QMainWindow):
             self._measurement_points = []
             self.sample_viewer.enable_point_selection(True)
             self.sample_viewer.connect_point(self._on_sample_point_clicked)
+            self.sample_viewer.disconnect_hover()
             self.sample_viewer.set_view_mode("pick")
             self.statusBar().showMessage("Measurement: click two points on the sample image")
         else:
@@ -450,6 +474,39 @@ class AppWindow(QMainWindow):
             self.sample_viewer.enable_point_selection(False)
             self.sample_viewer.set_view_mode("navigate")
             self.statusBar().showMessage("Measurement mode off")
+
+    def _on_intersects_toggled(self, checked: bool) -> None:
+        if checked:
+            if self.measure_button.isChecked():
+                self._measurement_points = []
+                self.sample_viewer.clear_measurement_preview()
+                self.sample_viewer.disconnect_point()
+                self._set_button_checked(self.measure_button, False)
+            if not self.sample_viewer._pixmap:
+                QMessageBox.warning(self, "Intersects", "Load a sample image first.")
+                self._set_button_checked(self.intersects_button, False)
+                return
+            if not self.calibration:
+                QMessageBox.warning(self, "Intersects", "Calibrate first before measuring.")
+                self._set_button_checked(self.intersects_button, False)
+                return
+
+            self._intersects_line_points = []
+            self._intersects_points = []
+            self._intersects_line_complete = False
+            self.sample_viewer.enable_point_selection(True)
+            self.sample_viewer.connect_point(self._on_intersects_point_clicked)
+            self.sample_viewer.connect_hover(self._on_intersects_hover)
+            self.sample_viewer.set_view_mode("pick")
+            self.sample_viewer.clear_measurement_preview()
+            self.sample_viewer.set_intersects_preview(None, None, None)
+            try:
+                self.intersects_done_button.setVisible(True)
+            except Exception:
+                pass
+            self.statusBar().showMessage("Intersects: click two points to draw the line, then click all grain intersects")
+        else:
+            self._finish_intersects_session(save=True)
 
     def _on_sample_point_clicked(self, x: float, y: float) -> None:
         self._measurement_points.append((x, y))
@@ -494,6 +551,135 @@ class AppWindow(QMainWindow):
         self.refresh_table()
         self.statusBar().showMessage(f"Added measurement {measurement.id}: {length_um:.2f} µm")
 
+    def _cancel_intersects_session(self) -> None:
+        self._intersects_line_points = []
+        self._intersects_points = []
+        self._intersects_line_complete = False
+        self.sample_viewer.clear_measurement_preview()
+        self.sample_viewer.clear_intersects_preview()
+        self.sample_viewer.disconnect_point()
+        self.sample_viewer.disconnect_hover()
+        self.sample_viewer.enable_point_selection(False)
+        self.sample_viewer.set_view_mode("navigate")
+        try:
+            self.intersects_done_button.setVisible(False)
+        except Exception:
+            pass
+
+    def _finish_intersects_session(self, save: bool) -> None:
+        if save and self._intersects_line_complete and self._intersects_points:
+            x1, y1 = self._intersects_line_points[0]
+            x2, y2 = self._intersects_line_points[1]
+            pixel_length = math.hypot(x2 - x1, y2 - y1)
+            if pixel_length <= 0.0:
+                QMessageBox.warning(self, "Intersects", "The line is too short to measure.")
+            elif not self.calibration:
+                QMessageBox.warning(self, "Intersects", "Calibration is missing.")
+            else:
+                count = len(self._intersects_points)
+                scaled_pixels = pixel_length * float(self.overlay_scale)
+                length_mm = scaled_pixels * self.calibration.mm_per_pixel
+                length_um = scaled_pixels * self.calibration.um_per_pixel
+                grain_size_mm = length_mm / count
+                grain_size_um = length_um / count
+
+                measurement = StoredMeasurement(
+                    id=0,
+                    measurement_type="intersects",
+                    x1=x1,
+                    y1=y1,
+                    x2=x2,
+                    y2=y2,
+                    pixel_length=pixel_length,
+                    length_mm=length_mm,
+                    length_um=length_um,
+                    intersect_points=tuple(self._intersects_points),
+                    grain_size_mm=grain_size_mm,
+                    grain_size_um=grain_size_um,
+                )
+                self.measurements.add(measurement)
+                self._refresh_measurement_overlay()
+                self.refresh_table()
+                self.statusBar().showMessage(
+                    f"Added intersects measurement {measurement.id}: {count} points, {grain_size_um:.2f} µm"
+                )
+        elif save and self._intersects_line_complete and not self._intersects_points:
+            QMessageBox.warning(self, "Intersects", "Mark at least one intersect point before finishing.")
+
+        self._cancel_intersects_session()
+        try:
+            self.intersects_done_button.setVisible(False)
+        except Exception:
+            pass
+        # ensure intersects toggle is cleared
+        try:
+            self.intersects_button.setChecked(False)
+        except Exception:
+            try:
+                self._set_button_checked(self.intersects_button, False)
+            except Exception:
+                pass
+
+    def _on_intersects_hover(self, x: float, y: float) -> None:
+        if len(self._intersects_line_points) == 1 and not self._intersects_line_complete:
+            self.sample_viewer.set_intersects_preview(self._intersects_line_points[0], (x, y), [])
+
+    def _distance_to_segment(self, px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0.0 and dy == 0.0:
+            return math.hypot(px - x1, py - y1)
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        return math.hypot(px - closest_x, py - closest_y)
+
+    def _on_intersects_point_clicked(self, x: float, y: float) -> None:
+        if len(self._intersects_line_points) < 2:
+            self._intersects_line_points.append((x, y))
+            if len(self._intersects_line_points) == 1:
+                self.sample_viewer.set_intersects_preview(self._intersects_line_points[0], self._intersects_line_points[0], [])
+                self.statusBar().showMessage("Intersects: first line point recorded, click second point")
+            else:
+                self._intersects_line_complete = True
+                self.sample_viewer.set_intersects_preview(self._intersects_line_points[0], self._intersects_line_points[1], [])
+                self.statusBar().showMessage("Intersects: line drawn, click grain intersection points on the line")
+            return
+
+        x1, y1 = self._intersects_line_points[0]
+        x2, y2 = self._intersects_line_points[1]
+        if self._distance_to_segment(x, y, x1, y1, x2, y2) > 12.0:
+            QMessageBox.information(self, "Intersects", "Click on the drawn line to mark an intersect point.")
+            return
+
+        self._intersects_points.append((x, y))
+        self.sample_viewer.set_intersects_preview(self._intersects_line_points[0], self._intersects_line_points[1], self._intersects_points)
+        count = len(self._intersects_points)
+        result_um = self._measurement_result_um_for_intersects_preview()
+        self.statusBar().showMessage(f"Intersects: {count} point(s) marked | Grain size: {result_um:.2f} µm")
+
+    def _on_intersects_done_clicked(self) -> None:
+        """Handler for the contextual Done button next to Intersects.
+        Finishes the current intersects session (saving if possible) and hides the Done button.
+        """
+        # delegate to existing finish logic
+        self._finish_intersects_session(save=True)
+        try:
+            self.intersects_done_button.setVisible(False)
+        except Exception:
+            pass
+
+    def _measurement_result_um_for_intersects_preview(self) -> float:
+        if len(self._intersects_line_points) < 2 or not self.calibration or not self._intersects_points:
+            return 0.0
+        x1, y1 = self._intersects_line_points[0]
+        x2, y2 = self._intersects_line_points[1]
+        pixel_length = math.hypot(x2 - x1, y2 - y1)
+        scaled_pixels = pixel_length * float(self.overlay_scale)
+        length_um = scaled_pixels * self.calibration.um_per_pixel
+        return length_um / len(self._intersects_points)
+
     def export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export measurements", filter="CSV Files (*.csv)")
         if not path:
@@ -530,6 +716,11 @@ class AppWindow(QMainWindow):
                 pt2 = (int(line.x2), int(line.y2))
                 # Draw line in red (BGR format)
                 cv2.line(export_image, pt1, pt2, (80, 80, 255), 2)
+                if line.measurement_type == "intersects" and line.intersect_points:
+                    for idx, (px, py) in enumerate(line.intersect_points, start=1):
+                        center = (int(px), int(py))
+                        cv2.circle(export_image, center, 4, (80, 220, 120), -1)
+                        cv2.putText(export_image, str(idx), (center[0] + 6, center[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # Draw measurement labels if enabled
             if self.sample_viewer._show_measurement_labels and self.sample_viewer._measurement_label_texts:
@@ -594,11 +785,10 @@ class AppWindow(QMainWindow):
         self.table.setRowCount(rows)
         for i, m in enumerate(self.measurements.get_all()):
             self.table.setItem(i, 0, QTableWidgetItem(str(m.id)))
-            # display pixel length and µm adjusted by current overlay scale
-            display_pixels = m.pixel_length * float(self.overlay_scale)
-            display_um = display_pixels * (self.calibration.um_per_pixel if self.calibration else (m.length_um / m.pixel_length if m.pixel_length else 0.0))
-            self.table.setItem(i, 1, QTableWidgetItem(f"{display_pixels:.2f}"))
-            self.table.setItem(i, 2, QTableWidgetItem(f"{display_um:.2f}"))
+            self.table.setItem(i, 1, QTableWidgetItem(m.measurement_type))
+            self.table.setItem(i, 2, QTableWidgetItem(self._measurement_line_length_text(m)))
+            self.table.setItem(i, 3, QTableWidgetItem(self._measurement_intersects_text(m)))
+            self.table.setItem(i, 4, QTableWidgetItem(self._measurement_avg_size_text(m)))
             delete_button = QToolButton()
             delete_button.setText("×")
             delete_button.setToolTip("Delete measurement")
@@ -609,7 +799,7 @@ class AppWindow(QMainWindow):
                 "QToolButton:hover { color: #d93025; }"
             )
             delete_button.clicked.connect(partial(self.delete_measurement_by_id, m.id))
-            self.table.setCellWidget(i, 3, delete_button)
+            self.table.setCellWidget(i, 5, delete_button)
 
         self._selected_measurement_id = current_selection if any(m.id == current_selection for m in self.measurements.get_all()) else None
         del blocker
@@ -634,22 +824,20 @@ class AppWindow(QMainWindow):
         count = len(measurements)
         
         if count == 0:
-            self.stats_label.setText("Measurements: 0 | Avg: — | Std Dev: —")
+            self.stats_label.setText("Measurements: 0 | Line avg: — | Intersects avg: —")
             return
-        
-        # Calculate average and standard deviation of length_um
-        lengths = [m.length_um for m in measurements]
-        avg_length = sum(lengths) / count
-        
-        # Calculate standard deviation
-        variance = sum((x - avg_length) ** 2 for x in lengths) / count
-        std_dev = variance ** 0.5
-        
-        # Coefficient of variation (std dev as % of mean) for relative spread
-        cv_percent = (std_dev / avg_length * 100) if avg_length > 0 else 0
-        
+
+        line_measurements = [m for m in measurements if m.measurement_type == "line"]
+        intersects_measurements = [m for m in measurements if m.measurement_type == "intersects"]
+
+        line_avg = self._mean([m.length_um for m in line_measurements])
+        intersects_avg = self._mean([self._measurement_avg_size_um(m) for m in intersects_measurements])
+
+        line_text = f"{line_avg:.2f} µm" if line_avg is not None else "—"
+        intersects_text = f"{intersects_avg:.2f} µm" if intersects_avg is not None else "—"
+
         self.stats_label.setText(
-            f"Measurements: {count} | Avg: {avg_length:.2f} µm | Std Dev: {std_dev:.2f} µm ({cv_percent:.1f}%)"
+            f"Measurements: {count} | Line avg: {line_text} | Intersects avg: {intersects_text}"
         )
 
     def delete_measurement_by_id(self, measurement_id: int) -> None:
@@ -720,7 +908,18 @@ class AppWindow(QMainWindow):
         self._refresh_measurement_overlay()
 
     def _refresh_measurement_overlay(self) -> None:
-        lines = [MeasurementLine(m.x1, m.y1, m.x2, m.y2, m.id) for m in self.measurements.get_all()]
+        lines = [
+            MeasurementLine(
+                m.x1,
+                m.y1,
+                m.x2,
+                m.y2,
+                m.id,
+                m.measurement_type,
+                tuple(getattr(m, "intersect_points", ()) or ()),
+            )
+            for m in self.measurements.get_all()
+        ]
         self.sample_viewer.set_measurements(lines)
         self.sample_viewer.set_selected_measurement_id(self._selected_measurement_id)
         # update labels mapping when overlay refreshed
@@ -739,13 +938,61 @@ class AppWindow(QMainWindow):
             self.sample_viewer.set_measurement_label_texts(mapping)
             return
         for m in self.measurements.get_all():
-            display_pixels = m.pixel_length * float(self.overlay_scale)
-            display_um = display_pixels * self.calibration.um_per_pixel
-            if self.show_sample_numbers_checkbox.isChecked():
-                mapping[m.id] = f"{m.id}: {display_um:.2f} µm"
+            result_um = self._measurement_result_um(m)
+            if m.measurement_type == "intersects":
+                count = self._measurement_points_count(m)
+                label = f"{result_um:.2f} µm ({count} pts)"
             else:
-                mapping[m.id] = f"{display_um:.2f} µm"
+                label = f"{result_um:.2f} µm"
+
+            if self.show_sample_numbers_checkbox.isChecked():
+                mapping[m.id] = f"{m.id}: {label}"
+            else:
+                mapping[m.id] = label
         self.sample_viewer.set_measurement_label_texts(mapping)
+
+    def _measurement_points_count(self, measurement: StoredMeasurement) -> int:
+        points = getattr(measurement, "intersect_points", ()) or ()
+        return len(points) if measurement.measurement_type == "intersects" else 0
+
+    def _mean(self, values: list[float | None]) -> float | None:
+        filtered = [value for value in values if value is not None]
+        if not filtered:
+            return None
+        return sum(filtered) / len(filtered)
+
+    def _measurement_line_length_text(self, measurement: StoredMeasurement) -> str:
+        return f"{float(measurement.length_um):.2f}" if measurement.length_um is not None else "—"
+
+    def _measurement_intersects_text(self, measurement: StoredMeasurement) -> str:
+        if measurement.measurement_type != "intersects":
+            return "—"
+        return str(self._measurement_points_count(measurement))
+
+    def _measurement_avg_size_um(self, measurement: StoredMeasurement) -> float | None:
+        if measurement.measurement_type != "intersects":
+            return None
+        grain_size_um = getattr(measurement, "grain_size_um", None)
+        if grain_size_um is not None:
+            return float(grain_size_um)
+        points_count = self._measurement_points_count(measurement)
+        if points_count > 0 and measurement.length_um:
+            return float(measurement.length_um) / points_count
+        return None
+
+    def _measurement_avg_size_text(self, measurement: StoredMeasurement) -> str:
+        value = self._measurement_avg_size_um(measurement)
+        return f"{value:.2f}" if value is not None else "—"
+
+    def _measurement_result_um(self, measurement: StoredMeasurement) -> float:
+        if measurement.measurement_type == "intersects":
+            grain_size_um = getattr(measurement, "grain_size_um", None)
+            if grain_size_um is not None:
+                return float(grain_size_um)
+            points_count = self._measurement_points_count(measurement)
+            if points_count > 0 and self.calibration:
+                return float(measurement.length_um) / points_count
+        return float(measurement.length_um)
 
     def _restore_default_interaction_modes(self) -> None:
         self.ref_viewer.set_move_overlay_enabled(self.move_overlay_action.isChecked())
